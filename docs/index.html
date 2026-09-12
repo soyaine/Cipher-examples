@@ -127,6 +127,104 @@ function scytale(text, n, decrypt) {
   return result.join('');
 }
 
+// 列置换: 密钥字母字典序决定读列顺序
+function columnar(text, key, decrypt) {
+  key = key.toUpperCase().replace(/[^A-Z]/g, '') || 'A';
+  var n = key.length;
+  var order = key.split('').map(function (ch, i) { return [ch, i]; })
+    .sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]; })
+    .map(function (p) { return p[1]; });
+  var i, out;
+  if (!decrypt) {
+    out = '';
+    order.forEach(function (col) {
+      for (i = col; i < text.length; i += n) out += text[i];
+    });
+    return out;
+  }
+  var rows = Math.ceil(text.length / n);
+  var counts = [], result = new Array(text.length), idx = 0;
+  for (i = 0; i < n; i++) counts.push(Math.floor((text.length - i + n - 1) / n));
+  order.forEach(function (col) {
+    var chunk = text.slice(idx, idx + counts[col]);
+    for (var k = 0; k < chunk.length; k++) result[col + k * n] = chunk[k];
+    idx += counts[col];
+  });
+  return result.join('');
+}
+
+// 带密钥凯撒: 密钥混合字母表再整体位移
+function keyedCaesar(text, key, shift, decrypt) {
+  var A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  var mixed = '';
+  (key.toUpperCase().match(/[A-Z]/g) || []).forEach(function (ch) {
+    if (mixed.indexOf(ch) < 0) mixed += ch;
+  });
+  for (var i = 0; i < 26; i++) if (mixed.indexOf(A[i]) < 0) mixed += A[i];
+  shift = ((shift % 26) + 26) % 26;
+  var table = mixed.slice(shift) + mixed.slice(0, shift);
+  return text.replace(/[a-zA-Z]/g, function (ch) {
+    var isLower = ch >= 'a';
+    var u = ch.toUpperCase();
+    var res = decrypt ? A[table.indexOf(u)] : table[A.indexOf(u)];
+    return isLower ? res.toLowerCase() : res;
+  });
+}
+
+// 特里特米乌斯: 位移随字母序号递增 (tabula recta 对角线)
+function trithemius(text, decrypt) {
+  var count = 0;
+  return text.replace(/[a-zA-Z]/g, function (ch) {
+    var base = ch <= 'Z' ? 65 : 97;
+    var shift = count++;
+    return String.fromCharCode((ch.charCodeAt(0) - base + (decrypt ? -shift : shift) + 26 * 10) % 26 + base);
+  });
+}
+
+// 乘法密码: 密文 = 明文 x 密钥 (mod 26), 密钥须与 26 互质
+function modInverse(k) {
+  for (var i = 1; i < 26; i++) if (k * i % 26 === 1) return i;
+  return 1;
+}
+function multiplicative(text, k, decrypt) {
+  var m = decrypt ? modInverse(k) : k;
+  return text.replace(/[a-zA-Z]/g, function (ch) {
+    var base = ch <= 'Z' ? 65 : 97;
+    return String.fromCharCode((ch.charCodeAt(0) - base) * m % 26 + base);
+  });
+}
+
+// 三分密码: 3x3x3 立方体 + 分组竖写横读 (Bifid 的三维版)
+function trifid(text, key, period, decrypt) {
+  var ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ+';
+  var mixed = '';
+  (key.toUpperCase().match(/[A-Z]/g) || []).forEach(function (ch) {
+    if (mixed.indexOf(ch) < 0) mixed += ch;
+  });
+  for (var i = 0; i < 27; i++) if (mixed.indexOf(ALPHA[i]) < 0) mixed += ALPHA[i];
+  var cube = {}, inv = {};
+  for (i = 0; i < 27; i++) {
+    cube[mixed[i]] = [Math.floor(i / 9) + 1, Math.floor(i % 9 / 3) + 1, i % 3 + 1];
+    inv[cube[mixed[i]].join('')] = mixed[i];
+  }
+  text = (text.toUpperCase().match(/[A-Z]/g) || []).join('');
+  var out = '';
+  for (var s = 0; s < text.length; s += period) {
+    var group = text.slice(s, s + period), n = group.length;
+    var digits = [];
+    if (!decrypt) {
+      var L = [], R = [], C = [];
+      for (i = 0; i < n; i++) { var t = cube[group[i]]; L.push(t[0]); R.push(t[1]); C.push(t[2]); }
+      digits = L.concat(R, C);
+      for (i = 0; i < digits.length; i += 3) out += inv[digits.slice(i, i + 3).join('')];
+    } else {
+      for (i = 0; i < n; i++) digits = digits.concat(cube[group[i]]);
+      for (i = 0; i < n; i++) out += inv['' + digits[i] + digits[n + i] + digits[2 * n + i]];
+    }
+  }
+  return out;
+}
+
 // ============ 演示卡片 ============
 var demos = [
   { name: '凯撒密码 Caesar', desc: '每个字母在字母表上固定位移 shift 位，位移 13 即 ROT13。',
@@ -166,6 +264,44 @@ var demos = [
       n.placeholder = '每圈字母数 n (默认 5)'; n.value = '5';
       card.append(input, n, btnRow('加密', function () { out.textContent = scytale(input.value, toInt(n.value, 5), false); }),
         btnRow('解密', function () { out.textContent = scytale(input.value, toInt(n.value, 5), true); }), out);
+    } },
+  { name: '列置换 Columnar', desc: '明文按密钥长度逐行写入矩形，按密钥字母的字典序依次读出各列得到密文。',
+    render: function (card) {
+      var input = el('textarea'), key = el('input'), out = outBox();
+      key.placeholder = '密钥单词 (默认 cipher)'; key.value = 'cipher';
+      card.append(input, key, btnRow('加密', function () { out.textContent = columnar(input.value, key.value, false); }),
+        btnRow('解密', function () { out.textContent = columnar(input.value, key.value, true); }), out);
+    } },
+  { name: '带密钥凯撒 Keyed Caesar', desc: '先用密钥单词生成混合字母表（密钥在前、其余按序补齐），再整体位移，比单纯凯撒多一层混淆。',
+    render: function (card) {
+      var input = el('textarea'), key = el('input'), shift = el('input'), out = outBox();
+      key.placeholder = '密钥单词 (默认 zebra)'; key.value = 'zebra';
+      shift.placeholder = '位移 shift (默认 1)'; shift.value = '1';
+      card.append(input, key, shift,
+        btnRow('加密', function () { out.textContent = keyedCaesar(input.value, key.value, toInt(shift.value, 1), false); }),
+        btnRow('解密', function () { out.textContent = keyedCaesar(input.value, key.value, toInt(shift.value, 1), true); }), out);
+    } },
+  { name: '特里特米乌斯 Trithemius', desc: '逐字母位移递增的凯撒：第 1 个字母移 0 位、第 2 个移 1 位……即 tabula recta 的对角线。',
+    render: function (card) {
+      var input = el('textarea'), out = outBox();
+      card.append(input, btnRow('加密', function () { out.textContent = trithemius(input.value, false); }),
+        btnRow('解密', function () { out.textContent = trithemius(input.value, true); }), out);
+    } },
+  { name: '乘法密码 Multiplicative', desc: '密文 = 明文 × 密钥 (mod 26)，要求密钥与 26 互质（如 3、5、7、11），是仿射密码 b=0 的特例。',
+    render: function (card) {
+      var input = el('textarea'), k = el('input'), out = outBox();
+      k.placeholder = '密钥 k，须与 26 互质 (默认 5)'; k.value = '5';
+      card.append(input, k, btnRow('加密', function () { out.textContent = multiplicative(input.value, toInt(k.value, 5), false); }),
+        btnRow('解密', function () { out.textContent = multiplicative(input.value, toInt(k.value, 5), true); }), out);
+    } },
+  { name: '三分密码 Trifid', desc: 'Delastelle 三分法：字母对应 3×3×3 立方体的(层,行,列)，分组竖写三行、横向拼串后每 3 位重新查表，Bifid 的三维版。',
+    render: function (card) {
+      var input = el('textarea'), key = el('input'), period = el('input'), out = outBox();
+      key.placeholder = '密钥单词 (默认 FELIXMARDSTB)'; key.value = 'FELIXMARDSTB';
+      period.placeholder = '分组长度 (默认 5)'; period.value = '5';
+      card.append(input, key, period,
+        btnRow('加密', function () { out.textContent = trifid(input.value, key.value, toInt(period.value, 5), false); }),
+        btnRow('解密', function () { out.textContent = trifid(input.value, key.value, toInt(period.value, 5), true); }), out);
     } }
 ];
 
@@ -204,6 +340,7 @@ var list = [
   ['Kamasutra cipher', '欲经密码', null, 'python/Kamasutra.py', 'javascript/Kamasutra.js'],
   ['Keyed Caesar', '带密钥凯撒密码', null, 'python/KeyedCaesar.py', null],
   ['Morse Code', '摩斯密码', null, null, 'javascript/Morse.js'],
+  ['Multiplicative', '乘法密码', null, 'python/Multiplicative.py', null],
   ['Playfair cipher', '波雷費密碼', null, 'python/Playfair.py', 'javascript/Playfair.js'],
   ['Polybius square', '波利比烏斯(棋盘密码)', 'c/Polybius.c', 'python/Polybius.py', 'javascript/Polybius.js'],
   ['Porta cipher', '波尔塔密码', null, 'python/Porta.py', 'javascript/Porta.js'],
@@ -211,6 +348,8 @@ var list = [
   ['ROT-13', 'ROT-13', 'c/ROT13.c', 'python/ROT13.py', 'javascript/ROT13.js'],
   ['Scytale', '密码棒密码', null, 'python/Scytale.py', null],
   ['Transposition cipher', '置换密码', 'c/Transposition.c', 'python/Transposition.py', 'javascript/Transposition.js'],
+  ['Trifid cipher', '三分密码', null, 'python/Trifid.py', null],
+  ['Trithemius', '特里特米乌斯密码', null, 'python/Trithemius.py', null],
   ['Two-square cipher', '二方密码', null, 'python/Two-Square.py', null],
   ['Vigenère', '维吉尼亚密码', 'c/Vigenere.c', 'python/Vigenere.py', 'javascript/Vigenere.js'],
   ['Zigzag (Rail Fence)', '栅栏密码', null, 'python/Railfence.py', null]
